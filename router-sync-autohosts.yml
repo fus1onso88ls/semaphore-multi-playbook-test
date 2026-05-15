@@ -46,25 +46,24 @@
       register: inv
 
     - name: Update target inventory in Semaphore
-      ansible.builtin.uri:
-        url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ target_inventory_id }}"
-        method: PUT
-        headers:
-          Authorization: "Bearer {{ semaphore_api_token }}"
-          Content-Type: "application/json"
-        validate_certs: false
-        body_format: json
-        status_code: 204
-        body:
-          id: "{{ inv.json.id }}"
-          name: "{{ inv.json.name }}"
-          project_id: "{{ inv.json.project_id }}"
-          inventory: "{{ new_inventory_text }}"
-          ssh_key_id: "{{ inv.json.ssh_key_id }}"
-          become_key_id: "{{ inv.json.become_key_id }}"
-          repository_id: "{{ inv.json.repository_id }}"
-          type: "{{ inv.json.type }}"
-      delegate_to: localhost
+  ansible.builtin.uri:
+    url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ target_inventory_id }}"
+    method: PUT
+    headers:
+      Authorization: "Bearer {{ semaphore_api_token }}"
+      Content-Type: "application/json"
+    validate_certs: false
+    body_format: json
+    status_code: 204
+    body:
+      id: {{ inv.json.id | int }}
+      name: "{{ inv.json.name }}"
+      project_id: {{ inv.json.project_id | int }}
+      type: "{{ inv.json.type }}"
+      ssh_key_id: {{ inv.json.ssh_key_id | int }}
+      inventory: "{{ new_inventory_text }}"
+  delegate_to: localhost
+
 
     - name: Done
       ansible.builtin.debug:
