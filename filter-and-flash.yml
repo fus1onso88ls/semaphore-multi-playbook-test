@@ -1,0 +1,106 @@
+- name: Filter hosts by access and flashed marker
+  hosts: auto_hosts
+  gather_facts: false
+  ignore_unreachable: true
+
+  vars:
+    marker_file: "ez-flashed"
+
+  tasks:
+    - name: Check marker file in HOME
+      ansible.builtin.raw: 'test -f "$HOME/{{ marker_file }}"'
+      register: marker_check
+      changed_when: false
+      failed_when: false
+
+    - name: Mark host as needs flash
+      ansible.builtin.set_fact:
+        needs_flash: "{{ marker_check.rc != 0 }}"
+
+    - name: Group hosts by flash status
+      ansible.builtin.group_by:
+        key: "flash_{{ 'yes' if needs_flash else 'no' }}"
+
+- name: Save filtered list back to auto-hosts inventory
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Validate vars from Variable Group
+      ansible.builtin.assert:
+        that:
+          - semaphore_url is defined
+          - semaphore_api_token is defined
+          - semaphore_project_id is defined
+          - target_inventory_id is defined
+        fail_msg: "Missing vars in Variable Group"
+
+    - name: Build list of hosts that need flash
+      ansible.builtin.set_fact:
+        flash_hosts: "{{ groups['flash_yes'] | default([]) }}"
+
+    - name: Build new inventory text
+      ansible.builtin.set_fact:
+        filtered_inventory_text: |
+          [auto_hosts]
+          {% for h in flash_hosts %}
+          {{ h }} ansible_host={{ hostvars[h].ansible_host | default(h) }}{% if hostvars[h].ansible_port is defined %} ansible_port={{ hostvars[h].ansible_port }}{% endif %}
+          {% endfor %}
+
+    - name: Read current target inventory object
+      ansible.builtin.uri:
+        url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ target_inventory_id }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ semaphore_api_token }}"
+        validate_certs: false
+        return_content: true
+        status_code: 200
+      register: inv
+
+    - name: Build update JSON body
+      ansible.builtin.set_fact:
+        update_body_json: >-
+          {
+            "id": {{ inv.json.id }},
+            "name": {{ inv.json.name | to_json }},
+            "project_id": {{ inv.json.project_id }},
+            "type": {{ inv.json.type | to_json }},
+            "ssh_key_id": {{ inv.json.ssh_key_id }},
+            "inventory": {{ filtered_inventory_text | to_json }}
+          }
+
+    - name: Update inventory in Semaphore
+      ansible.builtin.uri:
+        url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ target_inventory_id }}"
+        method: PUT
+        headers:
+          Authorization: "Bearer {{ semaphore_api_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        body_format: json
+        body: "{{ update_body_json }}"
+        status_code: 204
+
+    - name: Show summary
+      ansible.builtin.debug:
+        msg:
+          - "Total in auto_hosts: {{ groups['auto_hosts'] | default([]) | length }}"
+          - "Need flash: {{ groups['flash_yes'] | default([]) | length }}"
+          - "Already flashed: {{ groups['flash_no'] | default([]) | length }}"
+
+- name: Flash only hosts without marker
+  hosts: flash_yes
+  gather_facts: false
+  serial: 5
+
+  tasks:
+    - name: Placeholder - step 1
+      ansible.builtin.debug:
+        msg: "Here will be real flashing playbook step 1 for {{ inventory_hostname }}"
+
+    - name: Placeholder - step 2
+      ansible.builtin.debug:
+        msg: "Here will be real flashing playbook step 2 for {{ inventory_hostname }}"
+
+    # Когда будут реальные шаги прошивки — заменим 2 debug-таска на include_role/include_tasks/import_tasks
