@@ -45,6 +45,18 @@
       delegate_to: localhost
       register: inv
 
+    - name: Build update JSON body
+      ansible.builtin.set_fact:
+        update_body_json: >-
+          {
+            "id": {{ inv.json.id }},
+            "name": {{ inv.json.name | to_json }},
+            "project_id": {{ inv.json.project_id }},
+            "type": {{ inv.json.type | to_json }},
+            "ssh_key_id": {{ inv.json.ssh_key_id }},
+            "inventory": {{ new_inventory_text | to_json }}
+          }
+
     - name: Update target inventory in Semaphore
       ansible.builtin.uri:
         url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ target_inventory_id }}"
@@ -54,15 +66,10 @@
           Content-Type: "application/json"
         validate_certs: false
         body_format: json
+        body: "{{ update_body_json }}"
         status_code: 204
-        body:
-          id: "{{ inv.json.id }}"
-          name: "{{ inv.json.name }}"
-          project_id: "{{ inv.json.project_id }}"
-          type: "{{ inv.json.type }}"
-          ssh_key_id: "{{ inv.json.ssh_key_id }}"
-          inventory: "{{ new_inventory_text }}"
       delegate_to: localhost
+
 
     - name: Done
       ansible.builtin.debug:
