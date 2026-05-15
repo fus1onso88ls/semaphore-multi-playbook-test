@@ -1,0 +1,8 @@
+---
+- name: TEST STEP 1
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Show step 1
+      ansible.builtin.debug:
+        msg: "ШАГ 1: первый плейбук запустился"
