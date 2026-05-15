@@ -1,0 +1,26 @@
+- name: Export inventory from OpenWrt DHCP leases
+  hosts: routers
+  gather_facts: false
+
+  tasks:
+    - name: Build inventory text on router
+      ansible.builtin.raw: |
+        echo '###BEGIN_INVENTORY###'
+        echo '[auto_hosts]'
+        if [ -f /tmp/dhcp.leases ]; then
+          awk '{
+            ip=$3; host=$4;
+            if (ip !~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) next;
+            ip_id=ip; gsub(/\./, "_", ip_id);
+            if (host == "" || host == "*") host="host";
+            gsub(/[^A-Za-z0-9_-]/, "_", host);
+            printf "%s_%s ansible_host=%s\n", host, ip_id, ip
+          }' /tmp/dhcp.leases | sort -u
+        fi
+        echo '###END_INVENTORY###'
+      register: inv
+      changed_when: false
+
+    - name: Show generated inventory in log
+      ansible.builtin.debug:
+        var: inv.stdout_lines
