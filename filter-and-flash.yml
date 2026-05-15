@@ -12,14 +12,23 @@
       register: marker_check
       changed_when: false
       failed_when: false
+      ignore_unreachable: true
 
-    - name: Mark host as needs flash
+    - name: Calculate host state
       ansible.builtin.set_fact:
-        needs_flash: "{{ marker_check.rc != 0 }}"
+        host_reachable: "{{ (marker_check is defined) and (marker_check is reachable) }}"
+        needs_flash: "{{ (marker_check is defined) and (marker_check is reachable) and ((marker_check.rc | default(1)) != 0) }}"
+
+    - name: Group hosts by reachability
+      ansible.builtin.group_by:
+        key: "reachable_{{ 'yes' if host_reachable else 'no' }}"
 
     - name: Group hosts by flash status
       ansible.builtin.group_by:
         key: "flash_{{ 'yes' if needs_flash else 'no' }}"
+
+    - name: Clear host error flags
+      ansible.builtin.meta: clear_host_errors
 
 - name: Save filtered list back to auto-hosts inventory
   hosts: localhost
@@ -39,13 +48,31 @@
       ansible.builtin.set_fact:
         flash_hosts: "{{ groups['flash_yes'] | default([]) }}"
 
+    - name: Init filtered lines
+      ansible.builtin.set_fact:
+        filtered_lines: []
+
+    - name: Build filtered host lines
+      ansible.builtin.set_fact:
+        filtered_lines: >-
+          {{
+            filtered_lines + [
+              h ~
+              ' ansible_host=' ~ (hostvars[h].ansible_host | default(h)) ~
+              (
+                (' ansible_port=' ~ (hostvars[h].ansible_port | string))
+                if (hostvars[h].ansible_port is defined)
+                else ''
+              )
+            ]
+          }}
+      loop: "{{ flash_hosts }}"
+      loop_control:
+        loop_var: h
+
     - name: Build new inventory text
       ansible.builtin.set_fact:
-        filtered_inventory_text: |
-          [auto_hosts]
-          {% for h in flash_hosts %}
-          {{ h }} ansible_host={{ hostvars[h].ansible_host | default(h) }}{% if hostvars[h].ansible_port is defined %} ansible_port={{ hostvars[h].ansible_port }}{% endif %}
-          {% endfor %}
+        filtered_inventory_text: "{{ '[auto_hosts]\n' ~ ((filtered_lines | default([])) | join('\n')) ~ '\n' }}"
 
     - name: Read current target inventory object
       ansible.builtin.uri:
@@ -85,9 +112,11 @@
     - name: Show summary
       ansible.builtin.debug:
         msg:
-          - "Total in auto_hosts: {{ groups['auto_hosts'] | default([]) | length }}"
+          - "Total input hosts: {{ groups['auto_hosts'] | default([]) | length }}"
+          - "Reachable: {{ groups['reachable_yes'] | default([]) | length }}"
           - "Need flash: {{ groups['flash_yes'] | default([]) | length }}"
           - "Already flashed: {{ groups['flash_no'] | default([]) | length }}"
+          - "Unreachable/wrong creds: {{ groups['reachable_no'] | default([]) | length }}"
 
 - name: Flash only hosts without marker
   hosts: flash_yes
@@ -95,12 +124,10 @@
   serial: 5
 
   tasks:
-    - name: Placeholder - step 1
+    - name: Placeholder flash step 1
       ansible.builtin.debug:
-        msg: "Here will be real flashing playbook step 1 for {{ inventory_hostname }}"
+        msg: "FLASH STEP 1 for {{ inventory_hostname }}"
 
-    - name: Placeholder - step 2
+    - name: Placeholder flash step 2
       ansible.builtin.debug:
-        msg: "Here will be real flashing playbook step 2 for {{ inventory_hostname }}"
-
-    # Когда будут реальные шаги прошивки — заменим 2 debug-таска на include_role/include_tasks/import_tasks
+        msg: "FLASH STEP 2 for {{ inventory_hostname }}"
