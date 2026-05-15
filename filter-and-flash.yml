@@ -30,7 +30,7 @@
     - name: Clear host error flags
       ansible.builtin.meta: clear_host_errors
 
-- name: Save filtered list back to auto-hosts inventory
+- name: Save filtered list back to serverbox inventory
   hosts: localhost
   gather_facts: false
 
@@ -48,16 +48,16 @@
       ansible.builtin.set_fact:
         flash_hosts: "{{ groups['flash_yes'] | default([]) }}"
 
-    - name: Init filtered lines
+    - name: Init serverbox lines
       ansible.builtin.set_fact:
-        filtered_lines: []
+        serverbox_lines: []
 
-    - name: Build filtered host lines
+    - name: Build serverbox host lines
       ansible.builtin.set_fact:
-        filtered_lines: >-
+        serverbox_lines: >-
           {{
-            filtered_lines + [
-              h ~
+            serverbox_lines + [
+              (h | regex_replace('(?i)^serverbox', 'sb') | lower) ~
               ' ansible_host=' ~ (hostvars[h].ansible_host | default(h)) ~
               (
                 (' ansible_port=' ~ (hostvars[h].ansible_port | string))
@@ -69,10 +69,11 @@
       loop: "{{ flash_hosts }}"
       loop_control:
         loop_var: h
+      when: h is match('(?i)^serverbox[0-9]+$')
 
     - name: Build new inventory text
       ansible.builtin.set_fact:
-        filtered_inventory_text: "{{ '[auto_hosts]\n' ~ ((filtered_lines | default([])) | join('\n')) ~ '\n' }}"
+        filtered_inventory_text: "{{ '[serverbox]\n' ~ ((serverbox_lines | default([])) | join('\n')) ~ '\n' }}"
 
     - name: Read current target inventory object
       ansible.builtin.uri:
@@ -115,6 +116,7 @@
           - "Total input hosts: {{ groups['auto_hosts'] | default([]) | length }}"
           - "Reachable: {{ groups['reachable_yes'] | default([]) | length }}"
           - "Need flash: {{ groups['flash_yes'] | default([]) | length }}"
+          - "ServerBox saved: {{ serverbox_lines | default([]) | length }}"
           - "Already flashed: {{ groups['flash_no'] | default([]) | length }}"
           - "Unreachable/wrong creds: {{ groups['reachable_no'] | default([]) | length }}"
 
