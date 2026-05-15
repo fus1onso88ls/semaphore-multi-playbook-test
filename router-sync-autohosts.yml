@@ -1,0 +1,60 @@
+- name: Sync auto-hosts inventory from OpenWrt
+  hosts: routers
+  gather_facts: false
+
+  tasks:
+    - name: Read DHCP leases and build INI host lines
+      ansible.builtin.raw: |
+        if [ -f /tmp/dhcp.leases ]; then
+          awk '{
+            ip=$3; host=$4;
+            if (ip !~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) next;
+            if (host == "" || host == "*") host="host";
+            gsub(/[^A-Za-z0-9_-]/, "_", host);
+            ip_id=ip; gsub(/\./, "_", ip_id);
+            printf "%s_%s ansible_host=%s\n", host, ip_id, ip
+          }' /tmp/dhcp.leases | sort -u
+        fi
+      register: leases
+      changed_when: false
+
+    - name: Prepare full inventory text
+      ansible.builtin.set_fact:
+        new_inventory_text: |
+          [auto_hosts]
+          {{ leases.stdout | trim }}
+
+    - name: Read current inventory object
+      ansible.builtin.uri:
+        url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ target_inventory_id }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ semaphore_api_token }}"
+        return_content: true
+        status_code: 200
+      delegate_to: localhost
+      register: inv
+
+    - name: Update auto-hosts inventory in Semaphore
+      ansible.builtin.uri:
+        url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ target_inventory_id }}"
+        method: PUT
+        headers:
+          Authorization: "Bearer {{ semaphore_api_token }}"
+          Content-Type: "application/json"
+        body_format: json
+        status_code: 204
+        body:
+          id: "{{ inv.json.id }}"
+          name: "{{ inv.json.name }}"
+          project_id: "{{ inv.json.project_id }}"
+          inventory: "{{ new_inventory_text }}"
+          ssh_key_id: "{{ inv.json.ssh_key_id }}"
+          become_key_id: "{{ inv.json.become_key_id }}"
+          repository_id: "{{ inv.json.repository_id }}"
+          type: "{{ inv.json.type }}"
+      delegate_to: localhost
+
+    - name: Done
+      ansible.builtin.debug:
+        msg: "Inventory {{ inv.json.name }} updated successfully"
