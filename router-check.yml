@@ -1,0 +1,13 @@
+- name: Check router access
+  hosts: routers
+  gather_facts: false
+
+  tasks:
+    - name: Run test command on router
+      ansible.builtin.raw: "echo ROUTER_OK && uname -a"
+      register: test_out
+      changed_when: false
+
+    - name: Show output
+      ansible.builtin.debug:
+        var: test_out.stdout_lines
