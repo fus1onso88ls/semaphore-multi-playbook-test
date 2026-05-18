@@ -1,5 +1,5 @@
-- name: Filter hosts by access and flashed marker
-  hosts: auto_hosts
+- name: Filter hosts by access, name and flashed marker
+  hosts: "auto_hosts:serverbox"
   gather_facts: false
   ignore_unreachable: true
 
@@ -17,11 +17,25 @@
     - name: Calculate host state
       ansible.builtin.set_fact:
         host_reachable: "{{ (marker_check is defined) and (marker_check is reachable) }}"
-        needs_flash: "{{ (marker_check is defined) and (marker_check is reachable) and ((marker_check.rc | default(1)) != 0) }}"
+        host_is_serverbox: "{{ ((inventory_hostname | lower) is match('^serverbox[-_ ]*[0-9]+')) or ((inventory_hostname | lower) is match('^sb[0-9]+$')) }}"
+        needs_flash: >-
+          {{
+            (marker_check is defined) and
+            (marker_check is reachable) and
+            ((marker_check.rc | default(1)) != 0) and
+            (
+              ((inventory_hostname | lower) is match('^serverbox[-_ ]*[0-9]+')) or
+              ((inventory_hostname | lower) is match('^sb[0-9]+$'))
+            )
+          }}
 
     - name: Group hosts by reachability
       ansible.builtin.group_by:
         key: "reachable_{{ 'yes' if host_reachable else 'no' }}"
+
+    - name: Group hosts by serverbox name
+      ansible.builtin.group_by:
+        key: "serverbox_{{ 'yes' if host_is_serverbox else 'no' }}"
 
     - name: Group hosts by flash status
       ansible.builtin.group_by:
@@ -30,7 +44,7 @@
     - name: Clear host error flags
       ansible.builtin.meta: clear_host_errors
 
-- name: Save filtered list back to serverbox inventory
+- name: Save filtered list back to auto-hosts inventory
   hosts: localhost
   gather_facts: false
 
@@ -48,16 +62,48 @@
       ansible.builtin.set_fact:
         flash_hosts: "{{ groups['flash_yes'] | default([]) }}"
 
-    - name: Init serverbox lines
-      ansible.builtin.set_fact:
-        serverbox_lines: []
+    - name: Debug filter groups
+      ansible.builtin.debug:
+        msg:
+          - "input_auto_hosts={{ groups['auto_hosts'] | default([]) }}"
+          - "input_serverbox={{ groups['serverbox'] | default([]) }}"
+          - "serverbox_yes={{ groups['serverbox_yes'] | default([]) }}"
+          - "reachable_yes={{ groups['reachable_yes'] | default([]) }}"
+          - "flash_yes={{ groups['flash_yes'] | default([]) }}"
+          - "flash_no={{ groups['flash_no'] | default([]) }}"
+          - "reachable_no={{ groups['reachable_no'] | default([]) }}"
 
-    - name: Build serverbox host lines
+    - name: No candidates - keep current inventory unchanged
+      ansible.builtin.debug:
+        msg: "No hosts matched filter, inventory is not overwritten."
+      when: (flash_hosts | length) == 0
+
+    - name: Stop play when no candidates
+      ansible.builtin.meta: end_play
+      when: (flash_hosts | length) == 0
+
+    - name: Init filtered lines
       ansible.builtin.set_fact:
-        serverbox_lines: >-
+        filtered_lines: []
+
+    - name: Build filtered host lines (ServerBoxNNN -> sbNNN)
+      vars:
+        sb_name: >-
           {{
-            serverbox_lines + [
-              (h | regex_replace('(?i)^serverbox', 'sb') | lower) ~
+            (
+              (h | lower) | regex_replace('^serverbox[-_ ]*([0-9]+).*$','sb\\1')
+            )
+            if ((h | lower) is match('^serverbox[-_ ]*[0-9]+'))
+            else
+            (
+              (h | lower) | regex_replace('^sb([0-9]+).*$','sb\\1')
+            )
+          }}
+      ansible.builtin.set_fact:
+        filtered_lines: >-
+          {{
+            filtered_lines + [
+              sb_name ~
               ' ansible_host=' ~ (hostvars[h].ansible_host | default(h)) ~
               (
                 (' ansible_port=' ~ (hostvars[h].ansible_port | string))
@@ -69,11 +115,17 @@
       loop: "{{ flash_hosts }}"
       loop_control:
         loop_var: h
-      when: h is match('(?i)^serverbox[0-9]+$')
 
     - name: Build new inventory text
       ansible.builtin.set_fact:
-        filtered_inventory_text: "{{ '[serverbox]\n' ~ ((serverbox_lines | default([])) | join('\n')) ~ '\n' }}"
+        filtered_inventory_text: >-
+          {{
+            (
+              ['[serverbox]'] +
+              (filtered_lines | default([])) +
+              ['', '[all:children]', 'serverbox']
+            ) | join('\n')
+          }}{{ '\n' }}
 
     - name: Read current target inventory object
       ansible.builtin.uri:
@@ -113,23 +165,5 @@
     - name: Show summary
       ansible.builtin.debug:
         msg:
-          - "Total input hosts: {{ groups['auto_hosts'] | default([]) | length }}"
-          - "Reachable: {{ groups['reachable_yes'] | default([]) | length }}"
-          - "Need flash: {{ groups['flash_yes'] | default([]) | length }}"
-          - "ServerBox saved: {{ serverbox_lines | default([]) | length }}"
-          - "Already flashed: {{ groups['flash_no'] | default([]) | length }}"
-          - "Unreachable/wrong creds: {{ groups['reachable_no'] | default([]) | length }}"
-
-- name: Flash only hosts without marker
-  hosts: flash_yes
-  gather_facts: false
-  serial: 5
-
-  tasks:
-    - name: Placeholder flash step 1
-      ansible.builtin.debug:
-        msg: "FLASH STEP 1 for {{ inventory_hostname }}"
-
-    - name: Placeholder flash step 2
-      ansible.builtin.debug:
-        msg: "FLASH STEP 2 for {{ inventory_hostname }}"
+          - "Total selected for flash: {{ flash_hosts | length }}"
+          - "Inventory updated with [serverbox] and [all:children]"
