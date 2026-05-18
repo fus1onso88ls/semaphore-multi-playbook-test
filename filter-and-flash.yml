@@ -1,14 +1,12 @@
-- name: Filter hosts by access, name and flashed marker
+---
+- name: Probe hosts and mark flash candidates
   hosts: "auto_hosts:serverbox"
   gather_facts: false
   ignore_unreachable: true
 
-  vars:
-    marker_file: "ez-flashed"
-
   tasks:
     - name: Check marker file in HOME
-      ansible.builtin.raw: 'test -f "$HOME/{{ marker_file }}"'
+      ansible.builtin.shell: test -f "$HOME/ez-flashed"
       register: marker_check
       changed_when: false
       failed_when: false
@@ -16,154 +14,112 @@
 
     - name: Calculate host state
       ansible.builtin.set_fact:
-        host_reachable: "{{ (marker_check is defined) and (marker_check is reachable) }}"
-        host_is_serverbox: "{{ ((inventory_hostname | lower) is match('^serverbox[-_ ]*[0-9]+')) or ((inventory_hostname | lower) is match('^sb[0-9]+$')) }}"
+        host_reachable: "{{ marker_check is defined and marker_check is reachable }}"
+        host_is_serverbox: >-
+          {{
+            ((inventory_hostname | lower) is match('^serverbox[-_ ]*[0-9]+'))
+            or
+            ((inventory_hostname | lower) is match('^sb[0-9]+$'))
+          }}
         needs_flash: >-
           {{
-            (marker_check is defined) and
-            (marker_check is reachable) and
-            ((marker_check.rc | default(1)) != 0) and
-            (
-              ((inventory_hostname | lower) is match('^serverbox[-_ ]*[0-9]+')) or
+            (marker_check is defined)
+            and (marker_check is reachable)
+            and ((marker_check.rc | default(1)) != 0)
+            and (
+              ((inventory_hostname | lower) is match('^serverbox[-_ ]*[0-9]+'))
+              or
               ((inventory_hostname | lower) is match('^sb[0-9]+$'))
             )
           }}
 
-    - name: Group hosts by reachability
+    - name: Group by reachability
       ansible.builtin.group_by:
         key: "reachable_{{ 'yes' if host_reachable else 'no' }}"
 
-    - name: Group hosts by serverbox name
+    - name: Group by serverbox pattern
       ansible.builtin.group_by:
         key: "serverbox_{{ 'yes' if host_is_serverbox else 'no' }}"
 
-    - name: Group hosts by flash status
+    - name: Group by flash status
       ansible.builtin.group_by:
         key: "flash_{{ 'yes' if needs_flash else 'no' }}"
 
-    - name: Clear host error flags
-      ansible.builtin.meta: clear_host_errors
-
-- name: Save filtered list back to auto-hosts inventory
+- name: Build inventory text and update Semaphore inventory
   hosts: localhost
   gather_facts: false
 
+  vars:
+    semaphore_url: "{{ semaphore_url | default('https://semaphore-23525.magellan-fms.com') }}"
+    semaphore_project_id: "{{ semaphore_project_id | default(1) }}"
+    target_inventory_id: "{{ target_inventory_id | default(7) }}"
+    target_inventory_name: "{{ target_inventory_name | default('auto-hosts') }}"
+
   tasks:
-    - name: Validate vars from Variable Group
+    - name: Validate required vars
       ansible.builtin.assert:
         that:
-          - semaphore_url is defined
           - semaphore_api_token is defined
-          - semaphore_project_id is defined
-          - target_inventory_id is defined
-        fail_msg: "Missing vars in Variable Group"
+          - semaphore_api_token | length > 10
+        fail_msg: "Нужен semaphore_api_token в Variable Group"
 
-    - name: Build list of hosts that need flash
+    - name: Init serverbox lines
       ansible.builtin.set_fact:
-        flash_hosts: "{{ groups['flash_yes'] | default([]) }}"
+        serverbox_lines: []
 
-    - name: Debug filter groups
-      ansible.builtin.debug:
-        msg:
-          - "input_auto_hosts={{ groups['auto_hosts'] | default([]) }}"
-          - "input_serverbox={{ groups['serverbox'] | default([]) }}"
-          - "serverbox_yes={{ groups['serverbox_yes'] | default([]) }}"
-          - "reachable_yes={{ groups['reachable_yes'] | default([]) }}"
-          - "flash_yes={{ groups['flash_yes'] | default([]) }}"
-          - "flash_no={{ groups['flash_no'] | default([]) }}"
-          - "reachable_no={{ groups['reachable_no'] | default([]) }}"
-
-    - name: No candidates - keep current inventory unchanged
-      ansible.builtin.debug:
-        msg: "No hosts matched filter, inventory is not overwritten."
-      when: (flash_hosts | length) == 0
-
-    - name: Stop play when no candidates
-      ansible.builtin.meta: end_play
-      when: (flash_hosts | length) == 0
-
-    - name: Init filtered lines
+    - name: Build serverbox lines from candidates
       ansible.builtin.set_fact:
-        filtered_lines: []
-
-    - name: Build filtered host lines (ServerBoxNNN -> sbNNN)
+        serverbox_lines: "{{ serverbox_lines + [line_out] }}"
       vars:
-        sb_name: >-
-          {{
-            (
-              (h | lower) | regex_replace('^serverbox[-_ ]*([0-9]+).*$','sb\\1')
-            )
-            if ((h | lower) is match('^serverbox[-_ ]*[0-9]+'))
-            else
-            (
-              (h | lower) | regex_replace('^sb([0-9]+).*$','sb\\1')
-            )
-          }}
-      ansible.builtin.set_fact:
-        filtered_lines: >-
-          {{
-            filtered_lines + [
-              sb_name ~
-              ' ansible_host=' ~ (hostvars[h].ansible_host | default(h)) ~
-              (
-                (' ansible_port=' ~ (hostvars[h].ansible_port | string))
-                if (hostvars[h].ansible_port is defined)
-                else ''
-              )
-            ]
-          }}
-      loop: "{{ flash_hosts }}"
-      loop_control:
-        loop_var: h
+        ip_out: "{{ hostvars[item].ansible_host | default(item) }}"
+        port_out: "{{ hostvars[item].ansible_port | default('') }}"
+        id_from_serverbox: "{{ (item | lower | regex_findall('^serverbox[-_ ]*([0-9]+)') | first | default('')) }}"
+        id_from_sb: "{{ (item | lower | regex_findall('^sb([0-9]+)$') | first | default('')) }}"
+        sb_id: "{{ id_from_serverbox if (id_from_serverbox | length > 0) else id_from_sb }}"
+        sb_name: "{{ ('sb' ~ sb_id) if (sb_id | length > 0) else item }}"
+        port_part: "{{ (' ansible_port=' ~ (port_out | string)) if (port_out | string | length > 0) else '' }}"
+        line_out: "{{ sb_name ~ ' ansible_host=' ~ ip_out ~ port_part }}"
+      loop: "{{ groups['flash_yes'] | default([]) }}"
 
-    - name: Build new inventory text
+    - name: Compose inventory text with REAL new lines
       ansible.builtin.set_fact:
-        filtered_inventory_text: >-
-          {{
-            (
-              ['[serverbox]'] +
-              (filtered_lines | default([])) +
-              ['', '[all:children]', 'serverbox']
-            ) | join('\n')
-          }}{{ '\n' }}
+        inventory_lines: "{{ ['[serverbox]'] + serverbox_lines + [''] + ['[all:children]', 'serverbox'] }}"
+        new_inventory_text: "{{ inventory_lines | join('\n') }}"
 
     - name: Read current target inventory object
       ansible.builtin.uri:
         url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ target_inventory_id }}"
         method: GET
         headers:
+          Accept: "application/json"
           Authorization: "Bearer {{ semaphore_api_token }}"
-        validate_certs: false
         return_content: true
-        status_code: 200
-      register: inv
+        status_code: [200]
+      register: inv_get
 
-    - name: Build update JSON body
-      ansible.builtin.set_fact:
-        update_body_json: >-
-          {
-            "id": {{ inv.json.id }},
-            "name": {{ inv.json.name | to_json }},
-            "project_id": {{ inv.json.project_id }},
-            "type": {{ inv.json.type | to_json }},
-            "ssh_key_id": {{ inv.json.ssh_key_id }},
-            "inventory": {{ filtered_inventory_text | to_json }}
-          }
-
-    - name: Update inventory in Semaphore
+    - name: Update target inventory in Semaphore
       ansible.builtin.uri:
         url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ target_inventory_id }}"
         method: PUT
         headers:
-          Authorization: "Bearer {{ semaphore_api_token }}"
           Content-Type: "application/json"
-        validate_certs: false
+          Accept: "application/json"
+          Authorization: "Bearer {{ semaphore_api_token }}"
         body_format: json
-        body: "{{ update_body_json }}"
-        status_code: 204
+        body:
+          name: "{{ inv_get.json.name | default(target_inventory_name) }}"
+          project_id: "{{ inv_get.json.project_id | default(semaphore_project_id) }}"
+          inventory: "{{ new_inventory_text }}"
+          ssh_key_id: "{{ inv_get.json.ssh_key_id }}"
+          become_key_id: "{{ inv_get.json.become_key_id | default(None) }}"
+          type: "{{ inv_get.json.type | default('static') }}"
+        return_content: true
+        status_code: [200, 204]
+      register: inv_put
 
     - name: Show summary
       ansible.builtin.debug:
         msg:
-          - "Total selected for flash: {{ flash_hosts | length }}"
-          - "Inventory updated with [serverbox] and [all:children]"
+          - "Candidates count: {{ (groups['flash_yes'] | default([])) | length }}"
+          - "Written lines: {{ serverbox_lines | length }}"
+          - "Inventory {{ target_inventory_name }} updated"
