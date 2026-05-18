@@ -111,29 +111,35 @@
           Authorization: "Bearer {{ semaphore_api_token }}"
         validate_certs: false
         return_content: true
-        status_code: [200]
+        status_code: 200
       register: inv_get
 
-    - name: Build update JSON body
+    - name: Build update JSON body as raw string
       ansible.builtin.set_fact:
-        update_body_json:
-          id: "{{ inv_get.json.id }}"
-          name: "{{ inv_get.json.name | default(sem_target_inventory_name) }}"
-          project_id: "{{ inv_get.json.project_id | default(sem_project_id) }}"
-          type: "{{ inv_get.json.type | default('static') }}"
-          ssh_key_id: "{{ inv_get.json.ssh_key_id }}"
-          inventory: "{{ new_inventory_text }}"
+        update_body_json: >-
+          {
+            "id": {{ inv_get.json.id }},
+            "name": {{ inv_get.json.name | default(sem_target_inventory_name) | to_json }},
+            "project_id": {{ inv_get.json.project_id | default(sem_project_id) }},
+            "type": {{ inv_get.json.type | default("static") | to_json }},
+            "ssh_key_id": {{ inv_get.json.ssh_key_id | default(0, true) }},
+            "inventory": {{ new_inventory_text | to_json }}
+          }
+
+    - name: Show update JSON body
+      ansible.builtin.debug:
+        msg: "{{ update_body_json }}"
 
     - name: Update target inventory in Semaphore
       ansible.builtin.uri:
         url: "{{ sem_url }}/api/project/{{ sem_project_id }}/inventory/{{ sem_target_inventory_id }}"
         method: PUT
         headers:
+          Authorization: "Bearer {{ semaphore_api_token }}"
           Content-Type: "application/json"
           Accept: "application/json"
-          Authorization: "Bearer {{ semaphore_api_token }}"
         validate_certs: false
-        body_format: json
+        body_format: raw
         body: "{{ update_body_json }}"
         return_content: true
         status_code: [200, 204]
