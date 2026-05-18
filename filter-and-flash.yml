@@ -114,36 +114,44 @@
         status_code: 200
       register: inv_get
 
-    - name: Build update JSON body as raw string
+    - name: Build update JSON body
       ansible.builtin.set_fact:
-        update_body_json: >-
-          {
-            "id": {{ inv_get.json.id }},
-            "name": {{ inv_get.json.name | default(sem_target_inventory_name) | to_json }},
-            "project_id": {{ inv_get.json.project_id | default(sem_project_id) }},
-            "type": {{ inv_get.json.type | default("static") | to_json }},
-            "ssh_key_id": {{ inv_get.json.ssh_key_id | default(0, true) }},
-            "inventory": {{ new_inventory_text | to_json }}
-          }
+        update_body_json:
+          id: "{{ inv_get.json.id }}"
+          name: "{{ inv_get.json.name | default(sem_target_inventory_name) }}"
+          project_id: "{{ inv_get.json.project_id | default(sem_project_id) }}"
+          type: "{{ inv_get.json.type | default('static') }}"
+          ssh_key_id: "{{ inv_get.json.ssh_key_id }}"
+          inventory: "{{ new_inventory_text }}"
 
-    - name: Show update JSON body
-      ansible.builtin.debug:
-        msg: "{{ update_body_json }}"
+    - name: Write update JSON body to temp file
+      ansible.builtin.copy:
+        dest: /tmp/semaphore_inventory_update.json
+        content: "{{ update_body_json | to_json }}"
+        mode: "0600"
 
-    - name: Update target inventory in Semaphore
-      ansible.builtin.uri:
-        url: "{{ sem_url }}/api/project/{{ sem_project_id }}/inventory/{{ sem_target_inventory_id }}"
-        method: PUT
-        headers:
-          Authorization: "Bearer {{ semaphore_api_token }}"
-          Content-Type: "application/json"
-          Accept: "application/json"
-        validate_certs: false
-        body_format: raw
-        body: "{{ update_body_json }}"
-        return_content: true
-        status_code: [200, 204]
+    - name: Update target inventory in Semaphore via curl
+      ansible.builtin.shell: |
+        set -e
+
+        http_code=$(curl -k -sS \
+          -o /tmp/semaphore_inventory_update_response.txt \
+          -w "%{http_code}" \
+          -X PUT "{{ sem_url }}/api/project/{{ sem_project_id }}/inventory/{{ sem_target_inventory_id }}" \
+          -H "Authorization: Bearer {{ semaphore_api_token }}" \
+          -H "Content-Type: application/json" \
+          -H "Accept: application/json" \
+          --data-binary "@/tmp/semaphore_inventory_update.json")
+
+        echo "HTTP_CODE=$http_code"
+        echo "RESPONSE:"
+        cat /tmp/semaphore_inventory_update_response.txt || true
+
+        if [ "$http_code" != "200" ] && [ "$http_code" != "204" ]; then
+          exit 1
+        fi
       register: inv_put
+      changed_when: true
 
     - name: Show summary
       ansible.builtin.debug:
