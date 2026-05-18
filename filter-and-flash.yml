@@ -59,7 +59,7 @@
         serverbox_lines: >-
           {{
             serverbox_lines + [
-              (h | regex_replace('(?i)^serverbox', 'sb') | lower) ~
+              ('sb' ~ ((h | regex_findall('(?i)^serverbox[-_ ]*([0-9]+)') | first))) ~
               ' ansible_host=' ~ (hostvars[h].ansible_host | default(h)) ~
               (
                 (' ansible_port=' ~ (hostvars[h].ansible_port | string))
@@ -71,7 +71,7 @@
       loop: "{{ flash_hosts }}"
       loop_control:
         loop_var: h
-      when: h is match('(?i)^serverbox[0-9]+$')
+      when: h is match('(?i)^serverbox[-_ ]*[0-9]+.*$')
 
     - name: Build new inventory text
       ansible.builtin.set_fact:
