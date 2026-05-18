@@ -1,5 +1,5 @@
 ---
-- name: Probe hosts and mark flash candidates
+- name: Probe hosts and decide flash candidates
   hosts: "auto_hosts:serverbox"
   gather_facts: false
   ignore_unreachable: true
@@ -45,7 +45,7 @@
       ansible.builtin.group_by:
         key: "flash_{{ 'yes' if needs_flash else 'no' }}"
 
-- name: Build inventory text and update Semaphore inventory
+- name: Build and push filtered inventory to Semaphore
   hosts: localhost
   gather_facts: false
 
@@ -67,7 +67,7 @@
       ansible.builtin.set_fact:
         serverbox_lines: []
 
-    - name: Build serverbox lines from candidates
+    - name: Build serverbox lines from flash candidates
       ansible.builtin.set_fact:
         serverbox_lines: "{{ serverbox_lines + [line_out] }}"
       vars:
@@ -81,9 +81,12 @@
         line_out: "{{ sb_name ~ ' ansible_host=' ~ ip_out ~ port_part }}"
       loop: "{{ groups['flash_yes'] | default([]) }}"
 
-    - name: Compose inventory text with REAL new lines
+    - name: Compose inventory lines
       ansible.builtin.set_fact:
         inventory_lines: "{{ ['[serverbox]'] + serverbox_lines + [''] + ['[all:children]', 'serverbox'] }}"
+
+    - name: Compose inventory text with real new lines
+      ansible.builtin.set_fact:
         new_inventory_text: "{{ inventory_lines | join('\n') }}"
 
     - name: Read current target inventory object
@@ -120,6 +123,6 @@
     - name: Show summary
       ansible.builtin.debug:
         msg:
-          - "Candidates count: {{ (groups['flash_yes'] | default([])) | length }}"
+          - "Flash candidates: {{ (groups['flash_yes'] | default([])) | length }}"
           - "Written lines: {{ serverbox_lines | length }}"
           - "Inventory {{ target_inventory_name }} updated"
