@@ -14,10 +14,10 @@
 
     - name: Calculate host state
       ansible.builtin.set_fact:
-        host_reachable: "{{ marker_check is defined and marker_check is reachable }}"
+        host_reachable: "{{ (marker_check is defined) and (marker_check is reachable) }}"
         host_is_serverbox: >-
           {{
-            ((inventory_hostname | lower) is match('^serverbox[-_ ]*[0-9]+'))
+            ((inventory_hostname | lower) is match('^serverbox[-_ ]*[0-9]+$'))
             or
             ((inventory_hostname | lower) is match('^sb[0-9]+$'))
           }}
@@ -27,7 +27,7 @@
             and (marker_check is reachable)
             and ((marker_check.rc | default(1)) != 0)
             and (
-              ((inventory_hostname | lower) is match('^serverbox[-_ ]*[0-9]+'))
+              ((inventory_hostname | lower) is match('^serverbox[-_ ]*[0-9]+$'))
               or
               ((inventory_hostname | lower) is match('^sb[0-9]+$'))
             )
@@ -45,23 +45,32 @@
       ansible.builtin.group_by:
         key: "flash_{{ 'yes' if needs_flash else 'no' }}"
 
+    - name: Clear host error flags
+      ansible.builtin.meta: clear_host_errors
+
+
 - name: Build and push filtered inventory to Semaphore
   hosts: localhost
   gather_facts: false
 
-  vars:
-    semaphore_url: "{{ semaphore_url | default('https://semaphore-23525.magellan-fms.com') }}"
-    semaphore_project_id: "{{ semaphore_project_id | default(1) }}"
-    target_inventory_id: "{{ target_inventory_id | default(7) }}"
-    target_inventory_name: "{{ target_inventory_name | default('auto-hosts') }}"
-
   tasks:
+    - name: Set default Semaphore vars safely
+      ansible.builtin.set_fact:
+        sem_url: "{{ semaphore_url | default('https://semaphore-23525.magellan-fms.com') }}"
+        sem_project_id: "{{ semaphore_project_id | default(1) }}"
+        sem_target_inventory_id: "{{ target_inventory_id | default(7) }}"
+        sem_target_inventory_name: "{{ target_inventory_name | default('auto-hosts') }}"
+
     - name: Validate required vars
       ansible.builtin.assert:
         that:
           - semaphore_api_token is defined
           - semaphore_api_token | length > 10
         fail_msg: "Нужен semaphore_api_token в Variable Group"
+
+    - name: Build list of hosts that need flash
+      ansible.builtin.set_fact:
+        flash_hosts: "{{ groups['flash_yes'] | default([]) }}"
 
     - name: Init serverbox lines
       ansible.builtin.set_fact:
@@ -73,56 +82,82 @@
       vars:
         ip_out: "{{ hostvars[item].ansible_host | default(item) }}"
         port_out: "{{ hostvars[item].ansible_port | default('') }}"
-        id_from_serverbox: "{{ (item | lower | regex_findall('^serverbox[-_ ]*([0-9]+)') | first | default('')) }}"
+        id_from_serverbox: "{{ (item | lower | regex_findall('^serverbox[-_ ]*([0-9]+)$') | first | default('')) }}"
         id_from_sb: "{{ (item | lower | regex_findall('^sb([0-9]+)$') | first | default('')) }}"
         sb_id: "{{ id_from_serverbox if (id_from_serverbox | length > 0) else id_from_sb }}"
-        sb_name: "{{ ('sb' ~ sb_id) if (sb_id | length > 0) else item }}"
+        sb_name: "{{ 'sb' ~ sb_id }}"
         port_part: "{{ (' ansible_port=' ~ (port_out | string)) if (port_out | string | length > 0) else '' }}"
         line_out: "{{ sb_name ~ ' ansible_host=' ~ ip_out ~ port_part }}"
-      loop: "{{ groups['flash_yes'] | default([]) }}"
+      loop: "{{ flash_hosts }}"
+      when: >-
+        (item | lower) is match('^serverbox[-_ ]*[0-9]+$')
+        or
+        (item | lower) is match('^sb[0-9]+$')
 
-    - name: Compose inventory lines
+    - name: Compose inventory text
       ansible.builtin.set_fact:
-        inventory_lines: "{{ ['[serverbox]'] + serverbox_lines + [''] + ['[all:children]', 'serverbox'] }}"
-
-    - name: Compose inventory text with real new lines
-      ansible.builtin.set_fact:
-        new_inventory_text: "{{ inventory_lines | join('\n') }}"
+        new_inventory_text: "{{ '[serverbox]\n' ~ (serverbox_lines | join('\n')) ~ '\n' }}"
 
     - name: Read current target inventory object
       ansible.builtin.uri:
-        url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ target_inventory_id }}"
+        url: "{{ sem_url }}/api/project/{{ sem_project_id }}/inventory/{{ sem_target_inventory_id }}"
         method: GET
         headers:
           Accept: "application/json"
           Authorization: "Bearer {{ semaphore_api_token }}"
+        validate_certs: false
         return_content: true
         status_code: [200]
       register: inv_get
 
     - name: Update target inventory in Semaphore
       ansible.builtin.uri:
-        url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ target_inventory_id }}"
+        url: "{{ sem_url }}/api/project/{{ sem_project_id }}/inventory/{{ sem_target_inventory_id }}"
         method: PUT
         headers:
           Content-Type: "application/json"
           Accept: "application/json"
           Authorization: "Bearer {{ semaphore_api_token }}"
+        validate_certs: false
         body_format: json
         body:
-          name: "{{ inv_get.json.name | default(target_inventory_name) }}"
-          project_id: "{{ inv_get.json.project_id | default(semaphore_project_id) }}"
+          id: "{{ inv_get.json.id }}"
+          name: "{{ inv_get.json.name | default(sem_target_inventory_name) }}"
+          project_id: "{{ inv_get.json.project_id | default(sem_project_id) }}"
           inventory: "{{ new_inventory_text }}"
-          ssh_key_id: "{{ inv_get.json.ssh_key_id }}"
+          ssh_key_id: "{{ inv_get.json.ssh_key_id | default(None) }}"
           become_key_id: "{{ inv_get.json.become_key_id | default(None) }}"
           type: "{{ inv_get.json.type | default('static') }}"
         return_content: true
         status_code: [200, 204]
       register: inv_put
 
+    - name: Show generated inventory
+      ansible.builtin.debug:
+        msg: "{{ new_inventory_text }}"
+
     - name: Show summary
       ansible.builtin.debug:
         msg:
-          - "Flash candidates: {{ (groups['flash_yes'] | default([])) | length }}"
-          - "Written lines: {{ serverbox_lines | length }}"
-          - "Inventory {{ target_inventory_name }} updated"
+          - "Total input hosts: {{ groups['auto_hosts'] | default([]) | length }}"
+          - "Reachable: {{ groups['reachable_yes'] | default([]) | length }}"
+          - "Need flash: {{ groups['flash_yes'] | default([]) | length }}"
+          - "ServerBox saved: {{ serverbox_lines | length }}"
+          - "Already flashed: {{ groups['flash_no'] | default([]) | length }}"
+          - "Unreachable/wrong creds: {{ groups['reachable_no'] | default([]) | length }}"
+          - "Inventory {{ sem_target_inventory_name }} updated"
+
+
+- name: Flash only hosts without marker
+  hosts: flash_yes
+  gather_facts: false
+  serial: 5
+
+  tasks:
+    - name: Placeholder flash step 1
+      ansible.builtin.debug:
+        msg: "FLASH STEP 1 for {{ inventory_hostname }}"
+
+    - name: Placeholder flash step 2
+      ansible.builtin.debug:
+        msg: "FLASH STEP 2 for {{ inventory_hostname }}"
