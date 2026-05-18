@@ -98,6 +98,10 @@
       ansible.builtin.set_fact:
         new_inventory_text: "{{ '[serverbox]\n' ~ (serverbox_lines | join('\n')) ~ '\n' }}"
 
+    - name: Show generated inventory
+      ansible.builtin.debug:
+        msg: "{{ new_inventory_text }}"
+
     - name: Read current target inventory object
       ansible.builtin.uri:
         url: "{{ sem_url }}/api/project/{{ sem_project_id }}/inventory/{{ sem_target_inventory_id }}"
@@ -110,6 +114,16 @@
         status_code: [200]
       register: inv_get
 
+    - name: Build update JSON body
+      ansible.builtin.set_fact:
+        update_body_json:
+          id: "{{ inv_get.json.id }}"
+          name: "{{ inv_get.json.name | default(sem_target_inventory_name) }}"
+          project_id: "{{ inv_get.json.project_id | default(sem_project_id) }}"
+          type: "{{ inv_get.json.type | default('static') }}"
+          ssh_key_id: "{{ inv_get.json.ssh_key_id }}"
+          inventory: "{{ new_inventory_text }}"
+
     - name: Update target inventory in Semaphore
       ansible.builtin.uri:
         url: "{{ sem_url }}/api/project/{{ sem_project_id }}/inventory/{{ sem_target_inventory_id }}"
@@ -120,21 +134,10 @@
           Authorization: "Bearer {{ semaphore_api_token }}"
         validate_certs: false
         body_format: json
-        body:
-          id: "{{ inv_get.json.id }}"
-          name: "{{ inv_get.json.name | default(sem_target_inventory_name) }}"
-          project_id: "{{ inv_get.json.project_id | default(sem_project_id) }}"
-          inventory: "{{ new_inventory_text }}"
-          ssh_key_id: "{{ inv_get.json.ssh_key_id | default(None) }}"
-          become_key_id: "{{ inv_get.json.become_key_id | default(None) }}"
-          type: "{{ inv_get.json.type | default('static') }}"
+        body: "{{ update_body_json }}"
         return_content: true
         status_code: [200, 204]
       register: inv_put
-
-    - name: Show generated inventory
-      ansible.builtin.debug:
-        msg: "{{ new_inventory_text }}"
 
     - name: Show summary
       ansible.builtin.debug:
